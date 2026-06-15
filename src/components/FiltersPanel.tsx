@@ -1,22 +1,16 @@
 interface FiltersPanelProps {
-  canCreateBase: boolean
-  canRunFilter2: boolean
   canSave: boolean
   isProcessing: boolean
-  onCreateBase: () => void
-  onRunFilter2: () => void
+  isInitializingBase: boolean
   onSave: () => void
   onReset: () => void
   onStop: () => void
 }
 
 export function FiltersPanel({
-  canCreateBase,
-  canRunFilter2,
   canSave,
   isProcessing,
-  onCreateBase,
-  onRunFilter2,
+  isInitializingBase,
   onSave,
   onReset,
   onStop,
@@ -28,15 +22,7 @@ export function FiltersPanel({
       </header>
 
       <div className="button-grid">
-        <button type="button" onClick={onCreateBase} disabled={!canCreateBase || isProcessing}>
-          Créer la base
-        </button>
-
-        <button type="button" onClick={onRunFilter2} disabled={!canRunFilter2 || isProcessing}>
-          Filtrer avec les tirages
-        </button>
-
-        <button type="button" className="ghost" onClick={onSave} disabled={isProcessing || !canSave}>
+        <button type="button" onClick={onSave} disabled={!canSave || isProcessing}>
           Sauvegarder
         </button>
 
@@ -48,6 +34,8 @@ export function FiltersPanel({
       <button type="button" className="warning" onClick={onStop} disabled={!isProcessing}>
         Arrêter
       </button>
+
+      {isInitializingBase ? <p className="progress-idle-text">Création de la base en cours...</p> : null}
     </section>
   )
 }

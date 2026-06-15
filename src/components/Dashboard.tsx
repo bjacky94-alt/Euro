@@ -3,13 +3,12 @@ import type { StatisticsSnapshot } from '../types'
 interface DashboardProps {
   stats: StatisticsSnapshot
   baseCreated: boolean
-  lastSavedAt: string | null
 }
 
 const formatInt = (value: number): string =>
   new Intl.NumberFormat('fr-FR').format(value)
 
-export function Dashboard({ stats, baseCreated, lastSavedAt }: DashboardProps) {
+export function Dashboard({ stats, baseCreated }: DashboardProps) {
   return (
     <section className="panel">
       <header className="panel-header">
@@ -38,10 +37,6 @@ export function Dashboard({ stats, baseCreated, lastSavedAt }: DashboardProps) {
       <div className="meta-list">
         <p>
           Etat base: <b>{baseCreated ? 'Présente' : 'Absente'}</b>
-        </p>
-        <p>
-          Dernière sauvegarde:{' '}
-          <b>{lastSavedAt ? new Date(lastSavedAt).toLocaleString('fr-FR') : 'Aucune'}</b>
         </p>
       </div>
     </section>

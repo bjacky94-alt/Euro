@@ -11,6 +11,7 @@ import { clearBit, createBitmap, countActiveBits } from '../utils/bitmap'
 const ctx: DedicatedWorkerGlobalScope = self as DedicatedWorkerGlobalScope
 
 let stopRequested = false
+let isProcessing = false
 
 const post = (message: WorkerResponse, transfer?: Transferable[]): void => {
   if (transfer && transfer.length > 0) {
@@ -303,7 +304,7 @@ const handleApplyHistoricalFilter = async (
   console.log('Filter 2 started')
 
   const activeCount = countActiveBits(bitmap)
-  console.log('Active combinations to analyze:', activeCount)
+  console.log('Active count:', activeCount)
 
   reportProgress('applyHistoricalFilter', 0, activeCount, 0, startedAt)
   await waitTick()
@@ -312,13 +313,15 @@ const handleApplyHistoricalFilter = async (
     numbers: draw.numbers,
     stars: draw.stars,
   }))
+  console.log('Draws:', drawData.length)
 
-  const CHUNK_SIZE = 100000
+  const YIELD_INTERVAL_MS = 50
   let analyzedActive = 0
+  let lastYieldAt = Date.now()
   let cachedNumberIndex = -1
   let cachedNumbers: [number, number, number, number, number] = [1, 2, 3, 4, 5]
 
-  for (let byteIndex = 0; byteIndex < bitmap.length; byteIndex += 1) {
+  outer: for (let byteIndex = 0; byteIndex < bitmap.length; byteIndex += 1) {
     if (stopRequested) {
       break
     }
@@ -369,20 +372,24 @@ const handleApplyHistoricalFilter = async (
         deletedCount += 1
       }
 
-      if (analyzedActive % CHUNK_SIZE === 0) {
-        console.log('Filter 2 progress:', analyzedActive, '/', activeCount)
-        console.log('Filter 2 deleted:', deletedCount)
+      const now = Date.now()
+      if (now - lastYieldAt >= YIELD_INTERVAL_MS) {
+        lastYieldAt = now
+        console.log('Progress:', analyzedActive, '/', activeCount)
+        console.log('Deleted:', deletedCount)
         reportProgress('applyHistoricalFilter', analyzedActive, activeCount, deletedCount, startedAt)
         await waitTick()
 
         if (stopRequested) {
-          break
+          break outer
         }
       }
     }
   }
 
   reportProgress('applyHistoricalFilter', analyzedActive, activeCount, deletedCount, startedAt)
+  console.log('Progress:', analyzedActive, '/', activeCount)
+  console.log('Deleted:', deletedCount)
   console.log('Filter 2 done')
 
   const finalBitmap = toArrayBuffer(bitmap)
@@ -410,18 +417,38 @@ ctx.onmessage = (event: MessageEvent<WorkerRequest>) => {
     }
 
     if (data.type === 'createBase') {
-      void handleCreateBase().catch((error) => {
-        const message = error instanceof Error ? error.message : 'Erreur worker inconnue'
-        post({ type: 'error', message })
-      })
+      if (isProcessing) {
+        post({ type: 'error', message: 'Un traitement est déjà en cours.' })
+        return
+      }
+
+      isProcessing = true
+      void handleCreateBase()
+        .catch((error) => {
+          const message = error instanceof Error ? error.message : 'Erreur worker inconnue'
+          post({ type: 'error', message })
+        })
+        .finally(() => {
+          isProcessing = false
+        })
       return
     }
 
     if (data.type === 'applyHistoricalFilter') {
-      void handleApplyHistoricalFilter(data.bitmap, data.history).catch((error) => {
-        const message = error instanceof Error ? error.message : 'Erreur worker inconnue'
-        post({ type: 'error', message })
-      })
+      if (isProcessing) {
+        post({ type: 'error', message: 'Un traitement est déjà en cours.' })
+        return
+      }
+
+      isProcessing = true
+      void handleApplyHistoricalFilter(data.bitmap, data.history)
+        .catch((error) => {
+          const message = error instanceof Error ? error.message : 'Erreur worker inconnue'
+          post({ type: 'error', message })
+        })
+        .finally(() => {
+          isProcessing = false
+        })
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Erreur worker inconnue'

@@ -20,7 +20,7 @@ export function HistoryInput({
       <textarea
         value={rawValue}
         onChange={(event) => onRawChange(event.target.value)}
-        placeholder={'Exemple :\n28 16 20 22 11 + 4 9\n38 40 25 15 41 + 1 2'}
+        placeholder={'Format : 5 numéros (1-50) puis 2 étoiles (1-12) par ligne\n\n28 16 20 22 11 4 9\n38 40 25 15 41 1 2\n22 45 48 11 36 1 4'}
       />
 
       <div className="meta-list">

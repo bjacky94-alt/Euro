@@ -14,6 +14,12 @@ export function ProgressBar({ progress, isProcessing, status }: ProgressBarProps
   const ratio = progress.total > 0 ? Math.min(100, (progress.analyzed / progress.total) * 100) : 0
   const hasElapsed = progress.elapsedMs > 0
   const hasEta = progress.etaMs > 0
+  const phaseLabel =
+    progress.phase === 'createBase'
+      ? 'Création de la base'
+      : progress.phase === 'applyHistoricalFilter'
+        ? 'Filtrage avec les tirages'
+        : 'Traitement en cours'
 
   return (
     <section className="panel">
@@ -26,6 +32,8 @@ export function ProgressBar({ progress, isProcessing, status }: ProgressBarProps
 
       {isProcessing ? (
         <>
+          <p className="progress-idle-text">{phaseLabel}</p>
+
           <div className="progress-shell" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={ratio}>
             <div className="progress-fill" style={{ width: `${ratio}%` }} />
           </div>

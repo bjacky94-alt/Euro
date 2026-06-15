@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Dashboard } from './components/Dashboard'
 import { FiltersPanel } from './components/FiltersPanel'
-import { HistoryInput } from './components/HistoryInput'
+import { Filter2Panel } from './components/Filter2Panel'
+import type { Filter2Summary } from './components/Filter2Panel'
 import { ProgressBar } from './components/ProgressBar'
 import { ResultGenerator } from './components/ResultGenerator'
 import { parseHistoryInput } from './utils/parser'
+import { countActiveBits } from './utils/bitmap'
 import {
   decodeCombinationIndex,
   generateMoreResults,
@@ -48,10 +50,12 @@ function App() {
   const [bitmap, setBitmap] = useState<Uint8Array | null>(null)
   const [stats, setStats] = useState<StatisticsSnapshot>(defaultStats)
   const [baseCreated, setBaseCreated] = useState(false)
-  const [lastSavedAt, setLastSavedAt] = useState<string | null>(null)
   const [rawHistory, setRawHistory] = useState('')
+  const [filter2Summary, setFilter2Summary] = useState<Filter2Summary | null>(null)
   const [progress, setProgress] = useState<FilterProgress>(idleProgress)
   const [isProcessing, setIsProcessing] = useState(false)
+  const [isFilter2Running, setIsFilter2Running] = useState(false)
+  const [isInitializingBase, setIsInitializingBase] = useState(false)
   const [status, setStatus] = useState<'En attente' | 'En cours' | 'Terminé' | 'Erreur'>('En attente')
   const [notice, setNotice] = useState('')
   const [generatedResults, setGeneratedResults] = useState<number[]>([])
@@ -63,11 +67,10 @@ function App() {
   const generatedResultsRef = useRef(generatedResults)
   const requestedGeneratedCountRef = useRef(requestedGeneratedCount)
   const isProcessingRef = useRef(isProcessing)
+  const isInitializingBaseRef = useRef(isInitializingBase)
+  const isFilter2RunningRef = useRef(isFilter2Running)
+  const lastFilter2ProgressRef = useRef<FilterProgress | null>(null)
   const hardTimeoutRef = useRef<number | null>(null)
-
-  useEffect(() => {
-    historyRef.current = parsedHistory.draws
-  }, [parsedHistory.draws])
 
   useEffect(() => {
     generatedResultsRef.current = generatedResults
@@ -80,6 +83,28 @@ function App() {
   useEffect(() => {
     isProcessingRef.current = isProcessing
   }, [isProcessing])
+
+  useEffect(() => {
+    isInitializingBaseRef.current = isInitializingBase
+  }, [isInitializingBase])
+
+  useEffect(() => {
+    isFilter2RunningRef.current = isFilter2Running
+  }, [isFilter2Running])
+
+  const startBaseInitialization = () => {
+    if (isProcessingRef.current || isInitializingBaseRef.current) {
+      return
+    }
+
+    setIsInitializingBase(true)
+    setNotice('Création de la base en cours...')
+    setIsProcessing(true)
+    setStatus('En cours')
+    setProgress({ ...idleProgress, phase: 'createBase' })
+    armHardTimeout('createBase')
+    worker.postMessage({ type: 'createBase' })
+  }
 
   const clearHardTimeout = () => {
     if (hardTimeoutRef.current !== null) {
@@ -97,52 +122,28 @@ function App() {
       }
       worker.postMessage({ type: 'stop' })
       setIsProcessing(false)
+      setIsInitializingBase(false)
       setStatus('Erreur')
       setNotice('Traitement interrompu: temps maximum dépassé.')
     }, timeoutMs)
   }
 
   useEffect(() => {
-    loadState()
-      .then((saved) => {
-        if (!saved) {
-          return
-        }
-        setBitmap(new Uint8Array(saved.bitmap))
-        setStats(saved.stats)
-        setBaseCreated(saved.baseCreated)
-        setLastSavedAt(saved.lastSavedAt)
-        setRawHistory(
-          saved.history
-            .map((draw) => `${draw.numbers.join(' ')} + ${draw.stars.join(' ')}`)
-            .join('\n'),
-        )
-        const restoredRequested = Math.max(1, saved.requestedGeneratedCount ?? 10)
-        setRequestedGeneratedCount(restoredRequested)
-
-        const restoredGenerated = saved.generatedResults ?? []
-        const bitmapFromStorage = new Uint8Array(saved.bitmap)
-        const repaired = replaceInactiveResults(bitmapFromStorage, restoredGenerated)
-        setGeneratedResults(repaired)
-
-        setNotice('Base chargée automatiquement depuis IndexedDB.')
-      })
-      .catch(() => {
-        setNotice('Impossible de charger la base sauvegardée.')
-      })
-  }, [])
-
-  useEffect(() => {
     const onMessage = (event: MessageEvent<WorkerResponse>) => {
       const data = event.data
       if (data.type === 'progress') {
         setProgress(data.payload)
+        if (data.payload.phase === 'applyHistoricalFilter') {
+          lastFilter2ProgressRef.current = data.payload
+        }
         return
       }
 
       if (data.type === 'error') {
         clearHardTimeout()
         setIsProcessing(false)
+        setIsFilter2Running(false)
+        setIsInitializingBase(false)
         setStatus('Erreur')
         setProgress((previous) => ({ ...previous, phase: 'error' }))
         setNotice(data.message)
@@ -154,18 +155,12 @@ function App() {
         console.log('React received done')
         const nextBitmap = new Uint8Array(data.bitmap)
         const nextStats = data.stats
-        const isCreateBase = data.phase === 'createBase'
         setBitmap(nextBitmap)
         setStats(nextStats)
-        setProgress((previous) => ({
-          ...previous,
-          phase: 'done',
-          analyzed: isCreateBase ? TOTAL_COMBINATIONS : previous.analyzed,
-          total: isCreateBase ? TOTAL_COMBINATIONS : previous.total,
-          etaMs: 0,
-          removed: data.removed,
-        }))
+        setProgress({ ...idleProgress, phase: 'idle' })
         setIsProcessing(false)
+        setIsFilter2Running(false)
+        setIsInitializingBase(false)
         setStatus('Terminé')
 
         if (data.phase === 'createBase' && !data.cancelled) {
@@ -186,12 +181,32 @@ function App() {
           }).catch(() => {
             setNotice('Base créée, mais sauvegarde automatique échouée.')
           })
-          setLastSavedAt(now)
-          setNotice('Base créée: filtres 1 et 3 appliqués puis sauvegardés.')
+          setNotice('Base prête')
         } else if (data.cancelled) {
           setStatus('En attente')
+          setIsInitializingBase(false)
           setNotice('Traitement interrompu.')
+          if (data.phase === 'applyHistoricalFilter') {
+            const lastP = lastFilter2ProgressRef.current
+            setFilter2Summary({
+              analyzed: lastP?.analyzed ?? 0,
+              deleted: data.removed,
+              remaining: data.stats.active,
+              elapsedMs: lastP?.elapsedMs ?? 0,
+              cancelled: true,
+            })
+            lastFilter2ProgressRef.current = null
+          }
         } else {
+          const lastP = lastFilter2ProgressRef.current
+          setFilter2Summary({
+            analyzed: lastP?.analyzed ?? data.stats.total,
+            deleted: data.removed,
+            remaining: data.stats.active,
+            elapsedMs: lastP?.elapsedMs ?? 0,
+            cancelled: false,
+          })
+          lastFilter2ProgressRef.current = null
           const repairedGenerated = replaceInactiveResults(nextBitmap, generatedResultsRef.current)
           setGeneratedResults(repairedGenerated)
           setNotice('Filtrage terminé')
@@ -204,6 +219,8 @@ function App() {
     const onWorkerError = (event: ErrorEvent) => {
       clearHardTimeout()
       setIsProcessing(false)
+      setIsFilter2Running(false)
+      setIsInitializingBase(false)
       setStatus('Erreur')
       setNotice(event.message || 'Erreur non interceptée du worker.')
     }
@@ -211,6 +228,8 @@ function App() {
     const onWorkerMessageError = () => {
       clearHardTimeout()
       setIsProcessing(false)
+      setIsFilter2Running(false)
+      setIsInitializingBase(false)
       setStatus('Erreur')
       setNotice('Erreur de sérialisation des messages worker.')
     }
@@ -228,6 +247,42 @@ function App() {
   }, [worker])
 
   useEffect(() => {
+    loadState()
+      .then((saved) => {
+        if (saved) {
+          setBitmap(new Uint8Array(saved.bitmap))
+          setStats(saved.stats)
+          setBaseCreated(true)
+          setStatus('Terminé')
+          setRawHistory(
+            saved.history
+              .map((draw) => `${draw.numbers.join(' ')} ${draw.stars.join(' ')}`)
+              .join('\n'),
+          )
+          const restoredRequested = Math.max(1, saved.requestedGeneratedCount ?? 10)
+          setRequestedGeneratedCount(restoredRequested)
+
+          const restoredGenerated = saved.generatedResults ?? []
+          const bitmapFromStorage = new Uint8Array(saved.bitmap)
+          const repaired = replaceInactiveResults(bitmapFromStorage, restoredGenerated)
+          setGeneratedResults(repaired)
+          setNotice('Base chargée automatiquement depuis IndexedDB.')
+          return
+        }
+
+        window.setTimeout(() => {
+          startBaseInitialization()
+        }, 0)
+      })
+      .catch(() => {
+        setNotice('Impossible de charger la base sauvegardée.')
+        window.setTimeout(() => {
+          startBaseInitialization()
+        }, 0)
+      })
+  }, [])
+
+  useEffect(() => {
     if (!bitmap || generatedResults.length === 0) {
       return
     }
@@ -240,18 +295,12 @@ function App() {
     }
   }, [bitmap, generatedResults])
 
-  const handleCreateBase = () => {
-    setNotice('')
-    setIsProcessing(true)
-    setStatus('En cours')
-    setProgress({ ...idleProgress, phase: 'createBase' })
-    armHardTimeout('createBase')
-    worker.postMessage({ type: 'createBase' })
-  }
-
   const handleRunFilter2 = () => {
+    if (isProcessingRef.current || isInitializingBaseRef.current || isFilter2RunningRef.current) {
+      return
+    }
     if (!bitmap) {
-      setNotice('Crée ou charge une base avant le filtre 2.')
+      setNotice('Base absente')
       return
     }
     if (parsedHistory.draws.length === 0) {
@@ -259,18 +308,23 @@ function App() {
       return
     }
 
+    const activeCount = countActiveBits(bitmap)
+    setFilter2Summary(null)
     setNotice('')
+    setIsFilter2Running(true)
     setIsProcessing(true)
     setStatus('En cours')
-    setProgress({ ...idleProgress, phase: 'applyHistoricalFilter' })
+    setProgress({
+      ...idleProgress,
+      phase: 'applyHistoricalFilter',
+      total: activeCount,
+      analyzed: 0,
+      removed: 0,
+    })
     armHardTimeout('applyHistoricalFilter')
     const bitmapCopy = cloneBitmapBuffer(bitmap)
     worker.postMessage(
-      {
-        type: 'applyHistoricalFilter',
-        bitmap: bitmapCopy,
-        history: parsedHistory.draws,
-      },
+      { type: 'applyHistoricalFilter', bitmap: bitmapCopy, history: parsedHistory.draws },
       [bitmapCopy],
     )
   }
@@ -279,6 +333,8 @@ function App() {
     clearHardTimeout()
     worker.postMessage({ type: 'stop' })
     setStatus('En attente')
+    setIsInitializingBase(false)
+    setIsFilter2Running(false)
     setIsProcessing(false)
   }
 
@@ -292,30 +348,37 @@ function App() {
     await saveState({
       version: 2,
       bitmap: cloneBitmapBuffer(bitmap),
-      history: parsedHistory.draws,
+      history: historyRef.current,
       stats,
       baseCreated,
       lastSavedAt: now,
       generatedResults,
       requestedGeneratedCount,
     })
-    setLastSavedAt(now)
     setNotice('Sauvegarde effectuée dans IndexedDB.')
   }
 
   const handleReset = async () => {
+    if (isProcessingRef.current || isInitializingBaseRef.current) {
+      return
+    }
+
     await clearState()
     setBitmap(null)
     setStats(defaultStats)
     setBaseCreated(false)
-    setLastSavedAt(null)
     setProgress(idleProgress)
     setStatus('En attente')
     clearHardTimeout()
+    setFilter2Summary(null)
     setGeneratedResults([])
     setRequestedGeneratedCount(10)
     setGeneratorWarning('')
-    setNotice('Base réinitialisée.')
+    setNotice('Base réinitialisée. Création automatique en cours...')
+
+    window.setTimeout(() => {
+      startBaseInitialization()
+    }, 0)
   }
 
   const handleGenerateResults = async () => {
@@ -352,14 +415,13 @@ function App() {
       await saveState({
         version: 2,
         bitmap: cloneBitmapBuffer(bitmap),
-        history: parsedHistory.draws,
+        history: historyRef.current,
         stats,
         baseCreated,
         lastSavedAt: now,
         generatedResults: extended,
         requestedGeneratedCount: safeRequested,
       })
-      setLastSavedAt(now)
     } catch {
       setNotice('Résultats générés, mais sauvegarde automatique échouée.')
     }
@@ -379,12 +441,9 @@ function App() {
         <p className="subtitle">Sélection intelligente des combinaisons.</p>
 
         <FiltersPanel
-          canCreateBase={!baseCreated}
-          canRunFilter2={Boolean(bitmap)}
-          canSave={Boolean(bitmap)}
-          isProcessing={isProcessing}
-          onCreateBase={handleCreateBase}
-          onRunFilter2={handleRunFilter2}
+          canSave={Boolean(bitmap) && baseCreated}
+          isProcessing={isProcessing || isInitializingBase}
+          isInitializingBase={isInitializingBase}
           onSave={handleSave}
           onReset={handleReset}
           onStop={handleStop}
@@ -395,15 +454,21 @@ function App() {
 
       <main className="content-grid">
         <div className="area-summary">
-          <Dashboard stats={stats} baseCreated={baseCreated} lastSavedAt={lastSavedAt} />
+          <Dashboard stats={stats} baseCreated={baseCreated} />
         </div>
 
-        <div className="area-history">
-          <HistoryInput
-            rawValue={rawHistory}
-            onRawChange={setRawHistory}
+        <div className="area-filter2">
+          <Filter2Panel
+            rawHistory={rawHistory}
+            onRawHistoryChange={setRawHistory}
             parsedCount={parsedHistory.draws.length}
             ignoredCount={parsedHistory.ignoredLines.length}
+            canRun={Boolean(bitmap) && baseCreated && !isInitializingBase}
+            isRunning={isFilter2Running}
+            progress={progress}
+            summary={filter2Summary}
+            onRun={handleRunFilter2}
+            onStop={handleStop}
           />
         </div>
 
@@ -416,7 +481,7 @@ function App() {
             onGenerate={handleGenerateResults}
             visibleResults={visibleResults}
             warning={generatorWarning}
-            disabled={!bitmap || isProcessing}
+            disabled={!bitmap || isProcessing || isInitializingBase}
           />
         </div>
 
