@@ -143,6 +143,7 @@ function App() {
         clearHardTimeout()
         setIsProcessing(false)
         setStatus('Erreur')
+        setProgress((previous) => ({ ...previous, phase: 'error' }))
         setNotice(data.message)
         return
       }
@@ -157,7 +158,7 @@ function App() {
         setStats(nextStats)
         setProgress((previous) => ({
           ...previous,
-          phase: 'idle',
+          phase: 'done',
           analyzed: isCreateBase ? TOTAL_COMBINATIONS : previous.analyzed,
           total: isCreateBase ? TOTAL_COMBINATIONS : previous.total,
           etaMs: 0,
@@ -192,7 +193,7 @@ function App() {
         } else {
           const repairedGenerated = replaceInactiveResults(nextBitmap, generatedResultsRef.current)
           setGeneratedResults(repairedGenerated)
-          setNotice('Filtre 2 terminé.')
+          setNotice('Filtrage terminé')
         }
       }
     }
@@ -260,12 +261,12 @@ function App() {
     setNotice('')
     setIsProcessing(true)
     setStatus('En cours')
-    setProgress({ ...idleProgress, phase: 'filter2' })
+    setProgress({ ...idleProgress, phase: 'applyHistoricalFilter' })
     armHardTimeout()
     const bitmapCopy = cloneBitmapBuffer(bitmap)
     worker.postMessage(
       {
-        type: 'applyFilter2',
+        type: 'applyHistoricalFilter',
         bitmap: bitmapCopy,
         history: parsedHistory.draws,
       },

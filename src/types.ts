@@ -2,7 +2,7 @@ export const TOTAL_NUMBER_COMBINATIONS = 2_118_760
 export const TOTAL_STAR_COMBINATIONS = 66
 export const TOTAL_COMBINATIONS = 139_838_160
 
-export type FilterPhase = 'idle' | 'createBase' | 'filter2'
+export type FilterPhase = 'idle' | 'createBase' | 'applyHistoricalFilter' | 'done' | 'error'
 
 export interface Draw {
   numbers: [number, number, number, number, number]
@@ -38,14 +38,14 @@ export interface PersistedState {
 
 export type WorkerRequest =
   | { type: 'createBase' }
-  | { type: 'applyFilter2'; bitmap: ArrayBuffer; history: Draw[] }
+  | { type: 'applyHistoricalFilter'; bitmap: ArrayBuffer; history: Draw[] }
   | { type: 'stop' }
 
 export type WorkerResponse =
   | { type: 'progress'; payload: FilterProgress }
   | {
       type: 'done'
-      phase: Exclude<FilterPhase, 'idle'>
+      phase: 'createBase' | 'applyHistoricalFilter'
       bitmap: ArrayBuffer
       stats: StatisticsSnapshot
       removed: number

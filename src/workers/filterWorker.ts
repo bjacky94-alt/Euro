@@ -171,7 +171,7 @@ const nextCombination = (comb: number[], n: number, k: number): boolean => {
   return true
 }
 
-const applyPermanentFilters = async (): Promise<void> => {
+const handleCreateBase = async (): Promise<void> => {
   stopRequested = false
   console.log('Worker started createBase')
   const bitmap = createBitmap()
@@ -275,7 +275,10 @@ const applyPermanentFilters = async (): Promise<void> => {
   console.log('Worker done sent')
 }
 
-const applyFilter2 = async (bitmapBuffer: ArrayBuffer, history: Draw[]): Promise<void> => {
+const handleApplyHistoricalFilter = async (
+  bitmapBuffer: ArrayBuffer,
+  history: Draw[],
+): Promise<void> => {
   stopRequested = false
   const bitmap = new Uint8Array(bitmapBuffer)
   const startedAt = Date.now()
@@ -294,7 +297,7 @@ const applyFilter2 = async (bitmapBuffer: ArrayBuffer, history: Draw[]): Promise
   const activeCount = countActiveBits(bitmap)
   console.log('Active combinations to analyze:', activeCount)
 
-  reportProgress('filter2', 0, activeCount, 0, startedAt)
+  reportProgress('applyHistoricalFilter', 0, activeCount, 0, startedAt)
   await waitTick()
 
   const drawData = history.map((draw) => ({
@@ -361,7 +364,7 @@ const applyFilter2 = async (bitmapBuffer: ArrayBuffer, history: Draw[]): Promise
       if (analyzedActive % CHUNK_SIZE === 0) {
         console.log('Filter 2 progress:', analyzedActive, '/', activeCount)
         console.log('Filter 2 deleted:', deletedCount)
-        reportProgress('filter2', analyzedActive, activeCount, deletedCount, startedAt)
+        reportProgress('applyHistoricalFilter', analyzedActive, activeCount, deletedCount, startedAt)
         await waitTick()
 
         if (stopRequested) {
@@ -371,14 +374,14 @@ const applyFilter2 = async (bitmapBuffer: ArrayBuffer, history: Draw[]): Promise
     }
   }
 
-  reportProgress('filter2', analyzedActive, activeCount, deletedCount, startedAt)
+  reportProgress('applyHistoricalFilter', analyzedActive, activeCount, deletedCount, startedAt)
   console.log('Filter 2 done')
 
   const finalBitmap = toArrayBuffer(bitmap)
   post(
     {
       type: 'done',
-      phase: 'filter2',
+      phase: 'applyHistoricalFilter',
       bitmap: finalBitmap,
       stats: buildStats(bitmap),
       removed: deletedCount,
@@ -399,15 +402,15 @@ ctx.onmessage = (event: MessageEvent<WorkerRequest>) => {
     }
 
     if (data.type === 'createBase') {
-      void applyPermanentFilters().catch((error) => {
+      void handleCreateBase().catch((error) => {
         const message = error instanceof Error ? error.message : 'Erreur worker inconnue'
         post({ type: 'error', message })
       })
       return
     }
 
-    if (data.type === 'applyFilter2') {
-      void applyFilter2(data.bitmap, data.history).catch((error) => {
+    if (data.type === 'applyHistoricalFilter') {
+      void handleApplyHistoricalFilter(data.bitmap, data.history).catch((error) => {
         const message = error instanceof Error ? error.message : 'Erreur worker inconnue'
         post({ type: 'error', message })
       })
