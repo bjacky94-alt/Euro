@@ -3,6 +3,8 @@ interface FiltersPanelProps {
   isProcessing: boolean
   isInitializingBase: boolean
   onSave: () => void
+  onExportBackup: () => void
+  onImportBackup: () => void
   onReset: () => void
   onStop: () => void
 }
@@ -12,6 +14,8 @@ export function FiltersPanel({
   isProcessing,
   isInitializingBase,
   onSave,
+  onExportBackup,
+  onImportBackup,
   onReset,
   onStop,
 }: FiltersPanelProps) {
@@ -24,6 +28,14 @@ export function FiltersPanel({
       <div className="button-grid">
         <button type="button" onClick={onSave} disabled={!canSave || isProcessing}>
           Sauvegarder
+        </button>
+
+        <button type="button" onClick={onExportBackup} disabled={isProcessing}>
+          Exporter sauvegarde
+        </button>
+
+        <button type="button" onClick={onImportBackup} disabled={isProcessing}>
+          Importer sauvegarde
         </button>
 
         <button type="button" className="danger" onClick={onReset} disabled={isProcessing}>
