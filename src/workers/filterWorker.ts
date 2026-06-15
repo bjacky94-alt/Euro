@@ -181,7 +181,8 @@ const handleCreateBase = async (): Promise<void> => {
   let removedFilter1 = 0
   let removedFilter3 = 0
   let analyzed = 0
-  const chunkSize = 2500
+  let lastProgressAt = startedAt
+  const YIELD_EVERY = 50_000
 
   reportProgress('createBase', 0, TOTAL_COMBINATIONS, 0, startedAt)
 
@@ -202,11 +203,12 @@ const handleCreateBase = async (): Promise<void> => {
       }
     }
 
-    if ((numberIndex + 1) % 1000 === 0) {
+    if ((numberIndex + 1) % 1000 === 0 || Date.now() - lastProgressAt >= 200) {
+      lastProgressAt = Date.now()
       reportProgress('createBase', analyzed, TOTAL_COMBINATIONS, removedFilter1, startedAt)
     }
 
-    if ((numberIndex + 1) % chunkSize === 0) {
+    if ((numberIndex + 1) % YIELD_EVERY === 0) {
       await waitTick()
     }
 
@@ -216,6 +218,7 @@ const handleCreateBase = async (): Promise<void> => {
   }
 
   console.log('Filter 1 done')
+  lastProgressAt = Date.now()
 
   const numbers3 = [1, 2, 3, 4, 5]
   for (let numberIndex = 0; numberIndex < TOTAL_NUMBER_COMBINATIONS; numberIndex += 1) {
@@ -234,7 +237,8 @@ const handleCreateBase = async (): Promise<void> => {
       }
     }
 
-    if ((numberIndex + 1) % 1000 === 0) {
+    if ((numberIndex + 1) % 1000 === 0 || Date.now() - lastProgressAt >= 200) {
+      lastProgressAt = Date.now()
       reportProgress(
         'createBase',
         analyzed,
@@ -244,7 +248,7 @@ const handleCreateBase = async (): Promise<void> => {
       )
     }
 
-    if ((numberIndex + 1) % chunkSize === 0) {
+    if ((numberIndex + 1) % YIELD_EVERY === 0) {
       await waitTick()
     }
 
@@ -264,14 +268,18 @@ const handleCreateBase = async (): Promise<void> => {
   )
 
   const stats = buildStats(bitmap)
-  post({
-    type: 'done',
-    phase: 'createBase',
-    bitmap: toArrayBuffer(bitmap),
-    stats,
-    removed: removedFilter1 + removedFilter3,
-    cancelled: stopRequested,
-  })
+  const finalBitmap = toArrayBuffer(bitmap)
+  post(
+    {
+      type: 'done',
+      phase: 'createBase',
+      bitmap: finalBitmap,
+      stats,
+      removed: removedFilter1 + removedFilter3,
+      cancelled: stopRequested,
+    },
+    [finalBitmap],
+  )
   console.log('Worker done sent')
 }
 

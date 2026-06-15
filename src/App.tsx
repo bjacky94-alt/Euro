@@ -88,8 +88,9 @@ function App() {
     }
   }
 
-  const armHardTimeout = () => {
+  const armHardTimeout = (phase: 'createBase' | 'applyHistoricalFilter') => {
     clearHardTimeout()
+    const timeoutMs = phase === 'createBase' ? 30 * 60 * 1000 : 10 * 60 * 1000
     hardTimeoutRef.current = window.setTimeout(() => {
       if (!isProcessingRef.current) {
         return
@@ -98,7 +99,7 @@ function App() {
       setIsProcessing(false)
       setStatus('Erreur')
       setNotice('Traitement interrompu: temps maximum dépassé.')
-    }, 10 * 60 * 1000)
+    }, timeoutMs)
   }
 
   useEffect(() => {
@@ -244,7 +245,7 @@ function App() {
     setIsProcessing(true)
     setStatus('En cours')
     setProgress({ ...idleProgress, phase: 'createBase' })
-    armHardTimeout()
+    armHardTimeout('createBase')
     worker.postMessage({ type: 'createBase' })
   }
 
@@ -262,7 +263,7 @@ function App() {
     setIsProcessing(true)
     setStatus('En cours')
     setProgress({ ...idleProgress, phase: 'applyHistoricalFilter' })
-    armHardTimeout()
+    armHardTimeout('applyHistoricalFilter')
     const bitmapCopy = cloneBitmapBuffer(bitmap)
     worker.postMessage(
       {
