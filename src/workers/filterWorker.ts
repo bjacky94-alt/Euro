@@ -85,21 +85,69 @@ const buildStats = (bitmap: Uint8Array) => {
   }
 }
 
-// Precompute for each draw: the set of 5 numbers and the star pair indexes
-// compatible with at least 1 draw star (max 21 star indexes out of 66).
-const buildDrawStarIndexes = (stars: Draw['stars']): number[] => {
-  const [a, b] = stars
-  const indexes: number[] = []
-  let si = 0
+const STAR_PAIRS: [number, number][] = (() => {
+  const pairs: [number, number][] = []
   for (let s1 = 1; s1 <= 11; s1 += 1) {
     for (let s2 = s1 + 1; s2 <= 12; s2 += 1) {
-      if (s1 === a || s2 === a || s1 === b || s2 === b) {
-        indexes.push(si)
-      }
-      si += 1
+      pairs.push([s1, s2])
     }
   }
-  return indexes
+  return pairs
+})()
+
+const CHOOSE: number[][] = (() => {
+  const table = Array.from({ length: 51 }, () => Array(6).fill(0))
+  for (let n = 0; n <= 50; n += 1) {
+    table[n][0] = 1
+    for (let k = 1; k <= Math.min(5, n); k += 1) {
+      table[n][k] = k === n ? 1 : table[n - 1][k - 1] + table[n - 1][k]
+    }
+  }
+  return table
+})()
+
+const decodeNumberCombination = (rankInput: number): [number, number, number, number, number] => {
+  let rank = rankInput
+  const result: number[] = []
+  let previous = 0
+
+  for (let i = 0; i < 5; i += 1) {
+    for (let value = previous + 1; value <= 50; value += 1) {
+      const count = CHOOSE[50 - value][5 - i - 1]
+      if (rank < count) {
+        result.push(value)
+        previous = value
+        break
+      }
+      rank -= count
+    }
+  }
+
+  return result as [number, number, number, number, number]
+}
+
+const hasAtLeastThreeNumberMatches = (
+  combo: readonly [number, number, number, number, number],
+  draw: readonly [number, number, number, number, number],
+): boolean => {
+  let i = 0
+  let j = 0
+  let matches = 0
+  while (i < 5 && j < 5) {
+    if (combo[i] === draw[j]) {
+      matches += 1
+      if (matches >= 3) {
+        return true
+      }
+      i += 1
+      j += 1
+    } else if (combo[i] < draw[j]) {
+      i += 1
+    } else {
+      j += 1
+    }
+  }
+  return false
 }
 
 const waitTick = async (): Promise<void> =>
@@ -231,93 +279,113 @@ const applyFilter2 = async (bitmapBuffer: ArrayBuffer, history: Draw[]): Promise
   stopRequested = false
   const bitmap = new Uint8Array(bitmapBuffer)
   const startedAt = Date.now()
-  let removed = 0
+  let deletedCount = 0
 
   if (history.length === 0) {
     post({
-      type: 'done',
-      phase: 'filter2',
-      bitmap: toArrayBuffer(bitmap),
-      stats: buildStats(bitmap),
-      removed,
-      cancelled: false,
+      type: 'error',
+      message: 'Aucun tirage valide à analyser',
     })
-    console.log('Worker done sent')
     return
   }
 
-  // Total de référence = combinaisons actives avant ce filtre.
-  // Yield immediately before ANY heavy work so React receives the first progress.
-  reportProgress('filter2', 0, TOTAL_NUMBER_COMBINATIONS, 0, startedAt)
+  console.log('Filter 2 started')
+
+  const activeCount = countActiveBits(bitmap)
+  console.log('Active combinations to analyze:', activeCount)
+
+  reportProgress('filter2', 0, activeCount, 0, startedAt)
   await waitTick()
 
-  // Precompute per draw: number set + compatible star pair indexes.
   const drawData = history.map((draw) => ({
-    numbersSet: new Set<number>(draw.numbers),
-    starIndexes: buildDrawStarIndexes(draw.stars),
+    numbers: draw.numbers,
+    stars: draw.stars,
   }))
 
-  // Reusable buffer to mark star indexes to suppress for a given number combo.
-  const toSuppressBuffer = new Uint8Array(TOTAL_STAR_COMBINATIONS)
+  const CHUNK_SIZE = 100000
+  let analyzedActive = 0
+  let cachedNumberIndex = -1
+  let cachedNumbers: [number, number, number, number, number] = [1, 2, 3, 4, 5]
 
-  // Iterate directly over all C(50,5) number combinations — no rankCombination needed.
-  const CHUNK = 500
-  const numbers = [1, 2, 3, 4, 5]
-
-  for (let ni = 0; ni < TOTAL_NUMBER_COMBINATIONS; ni += 1) {
+  for (let byteIndex = 0; byteIndex < bitmap.length; byteIndex += 1) {
     if (stopRequested) {
       break
     }
 
-    // Check each draw: does this number combo have >= 3 matches?
-    for (const { numbersSet, starIndexes } of drawData) {
-      let matches = 0
-      for (let i = 0; i < 5; i += 1) {
-        if (numbersSet.has(numbers[i])) {
-          matches += 1
-        }
-      }
-      if (matches >= 3) {
-        for (const si of starIndexes) {
-          toSuppressBuffer[si] = 1
-        }
-      }
+    const byteValue = bitmap[byteIndex]
+    if (byteValue === 0) {
+      continue
     }
 
-    // Apply suppressions and reset buffer for next iteration.
-    const base = ni * TOTAL_STAR_COMBINATIONS
-    for (let si = 0; si < TOTAL_STAR_COMBINATIONS; si += 1) {
-      if (toSuppressBuffer[si] === 1) {
-        toSuppressBuffer[si] = 0
-        if (clearBit(bitmap, base + si)) {
-          removed += 1
+    for (let bit = 0; bit < 8; bit += 1) {
+      if ((byteValue & (1 << bit)) === 0) {
+        continue
+      }
+
+      const bitIndex = (byteIndex << 3) + bit
+      if (bitIndex >= TOTAL_COMBINATIONS) {
+        break
+      }
+
+      analyzedActive += 1
+
+      const numberIndex = Math.floor(bitIndex / TOTAL_STAR_COMBINATIONS)
+      const starIndex = bitIndex % TOTAL_STAR_COMBINATIONS
+      if (numberIndex !== cachedNumberIndex) {
+        cachedNumberIndex = numberIndex
+        cachedNumbers = decodeNumberCombination(numberIndex)
+      }
+
+      const [s1, s2] = STAR_PAIRS[starIndex]
+      let shouldDelete = false
+
+      for (const draw of drawData) {
+        if (!hasAtLeastThreeNumberMatches(cachedNumbers, draw.numbers)) {
+          continue
+        }
+
+        const matchedStars =
+          (s1 === draw.stars[0] || s1 === draw.stars[1] ? 1 : 0) +
+          (s2 === draw.stars[0] || s2 === draw.stars[1] ? 1 : 0)
+
+        if (matchedStars >= 1) {
+          shouldDelete = true
+          break
         }
       }
-    }
 
-    // Advance to next combination.
-    if (ni < TOTAL_NUMBER_COMBINATIONS - 1) {
-      nextCombination(numbers, 50, 5)
-    }
+      if (shouldDelete && clearBit(bitmap, bitIndex)) {
+        deletedCount += 1
+      }
 
-    // Yield regularly so the event loop stays responsive.
-    if ((ni + 1) % CHUNK === 0) {
-      reportProgress('filter2', ni + 1, TOTAL_NUMBER_COMBINATIONS, removed, startedAt)
-      await waitTick()
+      if (analyzedActive % CHUNK_SIZE === 0) {
+        console.log('Filter 2 progress:', analyzedActive, '/', activeCount)
+        console.log('Filter 2 deleted:', deletedCount)
+        reportProgress('filter2', analyzedActive, activeCount, deletedCount, startedAt)
+        await waitTick()
+
+        if (stopRequested) {
+          break
+        }
+      }
     }
   }
 
-  reportProgress('filter2', TOTAL_NUMBER_COMBINATIONS, TOTAL_NUMBER_COMBINATIONS, removed, startedAt)
+  reportProgress('filter2', analyzedActive, activeCount, deletedCount, startedAt)
+  console.log('Filter 2 done')
 
   const finalBitmap = toArrayBuffer(bitmap)
-  post({
-    type: 'done',
-    phase: 'filter2',
-    bitmap: finalBitmap,
-    stats: buildStats(bitmap),
-    removed,
-    cancelled: stopRequested,
-  }, [finalBitmap])
+  post(
+    {
+      type: 'done',
+      phase: 'filter2',
+      bitmap: finalBitmap,
+      stats: buildStats(bitmap),
+      removed: deletedCount,
+      cancelled: stopRequested,
+    },
+    [finalBitmap],
+  )
   console.log('Worker done sent')
 }
 

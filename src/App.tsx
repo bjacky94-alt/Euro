@@ -253,7 +253,7 @@ function App() {
       return
     }
     if (parsedHistory.draws.length === 0) {
-      setNotice('Ajoute au moins un tirage historique valide.')
+      setNotice('Aucun tirage valide à analyser')
       return
     }
 
