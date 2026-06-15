@@ -63,7 +63,6 @@ function App() {
   const generatedResultsRef = useRef(generatedResults)
   const requestedGeneratedCountRef = useRef(requestedGeneratedCount)
   const isProcessingRef = useRef(isProcessing)
-  const inactivityTimerRef = useRef<number | null>(null)
   const hardTimeoutRef = useRef<number | null>(null)
 
   useEffect(() => {
@@ -82,32 +81,11 @@ function App() {
     isProcessingRef.current = isProcessing
   }, [isProcessing])
 
-  const clearInactivityWatchdog = () => {
-    if (inactivityTimerRef.current !== null) {
-      window.clearTimeout(inactivityTimerRef.current)
-      inactivityTimerRef.current = null
-    }
-  }
-
   const clearHardTimeout = () => {
     if (hardTimeoutRef.current !== null) {
       window.clearTimeout(hardTimeoutRef.current)
       hardTimeoutRef.current = null
     }
-  }
-
-  const armInactivityWatchdog = () => {
-    clearInactivityWatchdog()
-    inactivityTimerRef.current = window.setTimeout(() => {
-      if (!isProcessingRef.current) {
-        return
-      }
-      worker.postMessage({ type: 'stop' })
-      clearHardTimeout()
-      setIsProcessing(false)
-      setStatus('Erreur')
-      setNotice('Traitement interrompu: aucune progression détectée.')
-    }, 30000)
   }
 
   const armHardTimeout = () => {
@@ -117,7 +95,6 @@ function App() {
         return
       }
       worker.postMessage({ type: 'stop' })
-      clearInactivityWatchdog()
       setIsProcessing(false)
       setStatus('Erreur')
       setNotice('Traitement interrompu: temps maximum dépassé.')
@@ -159,12 +136,10 @@ function App() {
       const data = event.data
       if (data.type === 'progress') {
         setProgress(data.payload)
-        armInactivityWatchdog()
         return
       }
 
       if (data.type === 'error') {
-        clearInactivityWatchdog()
         clearHardTimeout()
         setIsProcessing(false)
         setStatus('Erreur')
@@ -173,7 +148,6 @@ function App() {
       }
 
       if (data.type === 'done') {
-        clearInactivityWatchdog()
         clearHardTimeout()
         console.log('React received done')
         const nextBitmap = new Uint8Array(data.bitmap)
@@ -226,7 +200,6 @@ function App() {
     worker.addEventListener('message', onMessage)
 
     const onWorkerError = (event: ErrorEvent) => {
-      clearInactivityWatchdog()
       clearHardTimeout()
       setIsProcessing(false)
       setStatus('Erreur')
@@ -234,7 +207,6 @@ function App() {
     }
 
     const onWorkerMessageError = () => {
-      clearInactivityWatchdog()
       clearHardTimeout()
       setIsProcessing(false)
       setStatus('Erreur')
@@ -248,7 +220,6 @@ function App() {
       worker.removeEventListener('message', onMessage)
       worker.removeEventListener('error', onWorkerError)
       worker.removeEventListener('messageerror', onWorkerMessageError)
-      clearInactivityWatchdog()
       clearHardTimeout()
       worker.terminate()
     }
@@ -272,7 +243,6 @@ function App() {
     setIsProcessing(true)
     setStatus('En cours')
     setProgress({ ...idleProgress, phase: 'createBase' })
-    armInactivityWatchdog()
     armHardTimeout()
     worker.postMessage({ type: 'createBase' })
   }
@@ -291,7 +261,6 @@ function App() {
     setIsProcessing(true)
     setStatus('En cours')
     setProgress({ ...idleProgress, phase: 'filter2' })
-    armInactivityWatchdog()
     armHardTimeout()
     const bitmapCopy = cloneBitmapBuffer(bitmap)
     worker.postMessage(
@@ -305,7 +274,6 @@ function App() {
   }
 
   const handleStop = () => {
-    clearInactivityWatchdog()
     clearHardTimeout()
     worker.postMessage({ type: 'stop' })
     setStatus('En attente')
@@ -341,7 +309,6 @@ function App() {
     setLastSavedAt(null)
     setProgress(idleProgress)
     setStatus('En attente')
-    clearInactivityWatchdog()
     clearHardTimeout()
     setGeneratedResults([])
     setRequestedGeneratedCount(10)

@@ -12,8 +12,12 @@ const ctx: DedicatedWorkerGlobalScope = self as DedicatedWorkerGlobalScope
 
 let stopRequested = false
 
-const post = (message: WorkerResponse): void => {
-  ctx.postMessage(message)
+const post = (message: WorkerResponse, transfer?: Transferable[]): void => {
+  if (transfer && transfer.length > 0) {
+    ctx.postMessage(message, transfer)
+  } else {
+    ctx.postMessage(message)
+  }
 }
 
 const toArrayBuffer = (bitmap: Uint8Array): ArrayBuffer => {
@@ -243,6 +247,9 @@ const applyFilter2 = async (bitmapBuffer: ArrayBuffer, history: Draw[]): Promise
     return
   }
 
+  // Send an immediate progress so React shows the filter has started.
+  reportProgress('filter2', 0, TOTAL_NUMBER_COMBINATIONS, 0, startedAt)
+
   // Precompute per draw: number set + compatible star pair indexes.
   const drawData = history.map((draw) => ({
     numbersSet: new Set<number>(draw.numbers),
@@ -309,14 +316,15 @@ const applyFilter2 = async (bitmapBuffer: ArrayBuffer, history: Draw[]): Promise
 
   reportProgress('filter2', TOTAL_NUMBER_COMBINATIONS, TOTAL_NUMBER_COMBINATIONS, removed, startedAt)
 
+  const finalBitmap = toArrayBuffer(bitmap)
   post({
     type: 'done',
     phase: 'filter2',
-    bitmap: toArrayBuffer(bitmap),
+    bitmap: finalBitmap,
     stats: buildStats(bitmap),
     removed,
     cancelled: stopRequested,
-  })
+  }, [finalBitmap])
   console.log('Worker done sent')
 }
 
