@@ -13,6 +13,8 @@ interface UsageCounters {
   stars: number[]
 }
 
+const GROUP_SIZE = 10
+
 const STAR_PAIRS: [number, number][] = []
 for (let a = 1; a <= 11; a += 1) {
   for (let b = a + 1; b <= 12; b += 1) {
@@ -62,13 +64,22 @@ export const decodeCombinationIndex = (index: number): DecodedCombination => {
 export const isCombinationActive = (bitmap: Uint8Array, index: number): boolean =>
   isBitSet(bitmap, index)
 
-const createUsageCounters = (results: number[]): UsageCounters => {
+const createUsageCountersForGroup = (
+  results: number[],
+  groupStart: number,
+  groupEndExclusive: number,
+): UsageCounters => {
   const counters: UsageCounters = {
     numbers: Array(51).fill(0),
     stars: Array(13).fill(0),
   }
 
-  for (const index of results) {
+  for (let i = groupStart; i < groupEndExclusive && i < results.length; i += 1) {
+    const index = results[i]
+    if (index < 0) {
+      continue
+    }
+
     const decoded = decodeCombinationIndex(index)
     for (const n of decoded.numbers) {
       counters.numbers[n] += 1
@@ -81,23 +92,21 @@ const createUsageCounters = (results: number[]): UsageCounters => {
   return counters
 }
 
-const registerInUsage = (usage: UsageCounters, candidateIndex: number): void => {
-  const decoded = decodeCombinationIndex(candidateIndex)
-  for (const n of decoded.numbers) {
-    usage.numbers[n] += 1
-  }
-  for (const s of decoded.stars) {
-    usage.stars[s] += 1
-  }
-}
-
 export const scoreCandidate = (candidate: DecodedCombination, usageCounters: UsageCounters): number => {
   let score = 0
   for (const n of candidate.numbers) {
-    score += usageCounters.numbers[n]
+    const usedCount = usageCounters.numbers[n]
+    if (usedCount > 0) {
+      // Penalize strongly repeated main numbers inside the current group of 10.
+      score += 100 + usedCount * 20
+    }
   }
   for (const s of candidate.stars) {
-    score += usageCounters.stars[s]
+    const usedCount = usageCounters.stars[s]
+    if (usedCount > 0) {
+      // Stars are secondary, so the penalty is lighter than main numbers.
+      score += 10 + usedCount * 2
+    }
   }
   return score
 }
@@ -105,19 +114,23 @@ export const scoreCandidate = (candidate: DecodedCombination, usageCounters: Usa
 const findBestCandidate = (
   bitmap: Uint8Array,
   used: Set<number>,
-  usage: UsageCounters,
+  existingResults: number[],
+  targetPosition: number,
 ): number | null => {
   let best: { index: number; score: number } | null = null
   const maxIndex = TOTAL_NUMBER_COMBINATIONS * TOTAL_STAR_COMBINATIONS
+  const groupStart = Math.floor(targetPosition / GROUP_SIZE) * GROUP_SIZE
+  const groupEndExclusive = groupStart + GROUP_SIZE
+  const groupUsage = createUsageCountersForGroup(existingResults, groupStart, groupEndExclusive)
 
-  for (let i = 0; i < 96; i += 1) {
+  for (let i = 0; i < 256; i += 1) {
     const candidateIndex = Math.floor(Math.random() * maxIndex)
     if (used.has(candidateIndex) || !isCombinationActive(bitmap, candidateIndex)) {
       continue
     }
 
     const decoded = decodeCombinationIndex(candidateIndex)
-    const score = scoreCandidate(decoded, usage)
+    const score = scoreCandidate(decoded, groupUsage)
     if (!best || score < best.score) {
       best = { index: candidateIndex, score }
     }
@@ -145,16 +158,14 @@ export const generateMoreResults = (
 ): number[] => {
   const nextResults = [...existingResults]
   const used = new Set(existingResults)
-  const usage = createUsageCounters(existingResults)
 
   while (nextResults.length < targetCount) {
-    const candidate = findBestCandidate(bitmap, used, usage)
+    const candidate = findBestCandidate(bitmap, used, nextResults, nextResults.length)
     if (candidate === null) {
       break
     }
     nextResults.push(candidate)
     used.add(candidate)
-    registerInUsage(usage, candidate)
   }
 
   return nextResults
@@ -182,17 +193,17 @@ export const replaceInactiveResults = (
   }
 
   const used = new Set(activeForUsage)
-  const usage = createUsageCounters(activeForUsage)
 
   for (const position of inactivePositions) {
-    const replacement = findBestCandidate(bitmap, used, usage)
+    const replacement = findBestCandidate(bitmap, used, nextResults, position)
     if (replacement === null) {
-      break
+      // Keep order stable if no replacement can be found right now.
+      nextResults[position] = generatedResults[position]
+      continue
     }
     nextResults[position] = replacement
     used.add(replacement)
-    registerInUsage(usage, replacement)
   }
 
-  return nextResults.filter((index) => index >= 0)
+  return nextResults
 }
