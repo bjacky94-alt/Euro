@@ -177,7 +177,7 @@ function App() {
 
   const armHardTimeout = (phase: 'createBase' | 'applyHistoricalFilter') => {
     clearHardTimeout()
-    const timeoutMs = phase === 'createBase' ? 30 * 60 * 1000 : 10 * 60 * 1000
+    const timeoutMs = phase === 'createBase' ? 30 * 60 * 1000 : 60 * 60 * 1000
     hardTimeoutRef.current = window.setTimeout(() => {
       if (!isProcessingRef.current) {
         return
