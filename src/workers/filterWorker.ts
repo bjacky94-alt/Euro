@@ -232,7 +232,6 @@ const applyFilter2 = async (bitmapBuffer: ArrayBuffer, history: Draw[]): Promise
   const bitmap = new Uint8Array(bitmapBuffer)
   const startedAt = Date.now()
   let removed = 0
-  let lastProgressAt = startedAt
 
   if (history.length === 0) {
     post({
@@ -248,11 +247,9 @@ const applyFilter2 = async (bitmapBuffer: ArrayBuffer, history: Draw[]): Promise
   }
 
   // Total de référence = combinaisons actives avant ce filtre.
-  const activeAtStart = countActiveBits(bitmap)
-  let analyzedActive = 0
-
-  // Send an immediate progress so React shows the filter has started.
-  reportProgress('filter2', 0, activeAtStart, 0, startedAt)
+  // Yield immediately before ANY heavy work so React receives the first progress.
+  reportProgress('filter2', 0, TOTAL_NUMBER_COMBINATIONS, 0, startedAt)
+  await waitTick()
 
   // Precompute per draw: number set + compatible star pair indexes.
   const drawData = history.map((draw) => ({
@@ -260,12 +257,11 @@ const applyFilter2 = async (bitmapBuffer: ArrayBuffer, history: Draw[]): Promise
     starIndexes: buildDrawStarIndexes(draw.stars),
   }))
 
-  // Reusable buffer to collect star indexes to suppress for a given number combo.
+  // Reusable buffer to mark star indexes to suppress for a given number combo.
   const toSuppressBuffer = new Uint8Array(TOTAL_STAR_COMBINATIONS)
 
-  // Iterate directly over all C(50,5) number combinations using the
-  // nextCombination approach — avoids any rankCombination overhead.
-  const CHUNK = 2000
+  // Iterate directly over all C(50,5) number combinations — no rankCombination needed.
+  const CHUNK = 500
   const numbers = [1, 2, 3, 4, 5]
 
   for (let ni = 0; ni < TOTAL_NUMBER_COMBINATIONS; ni += 1) {
@@ -274,7 +270,6 @@ const applyFilter2 = async (bitmapBuffer: ArrayBuffer, history: Draw[]): Promise
     }
 
     // Check each draw: does this number combo have >= 3 matches?
-    let suppressCount = 0
     for (const { numbersSet, starIndexes } of drawData) {
       let matches = 0
       for (let i = 0; i < 5; i += 1) {
@@ -284,38 +279,18 @@ const applyFilter2 = async (bitmapBuffer: ArrayBuffer, history: Draw[]): Promise
       }
       if (matches >= 3) {
         for (const si of starIndexes) {
-          if (toSuppressBuffer[si] === 0) {
-            toSuppressBuffer[si] = 1
-            suppressCount += 1
-          }
+          toSuppressBuffer[si] = 1
         }
       }
     }
 
-    if (suppressCount > 0) {
-      const base = ni * TOTAL_STAR_COMBINATIONS
-      for (let si = 0; si < TOTAL_STAR_COMBINATIONS; si += 1) {
-        if (toSuppressBuffer[si] === 1) {
-          toSuppressBuffer[si] = 0 // reset for next iteration
-          // Count each active bit we touch as "analysé".
-          const byteIdx = (base + si) >> 3
-          const bitOff = (base + si) & 7
-          if ((bitmap[byteIdx] & (1 << bitOff)) !== 0) {
-            analyzedActive += 1
-          }
-          if (clearBit(bitmap, base + si)) {
-            removed += 1
-          }
-        }
-      }
-    } else {
-      // No match for this number combo: all its active star combos are analyzed without being removed.
-      const base = ni * TOTAL_STAR_COMBINATIONS
-      for (let si = 0; si < TOTAL_STAR_COMBINATIONS; si += 1) {
-        const byteIdx = (base + si) >> 3
-        const bitOff = (base + si) & 7
-        if ((bitmap[byteIdx] & (1 << bitOff)) !== 0) {
-          analyzedActive += 1
+    // Apply suppressions and reset buffer for next iteration.
+    const base = ni * TOTAL_STAR_COMBINATIONS
+    for (let si = 0; si < TOTAL_STAR_COMBINATIONS; si += 1) {
+      if (toSuppressBuffer[si] === 1) {
+        toSuppressBuffer[si] = 0
+        if (clearBit(bitmap, base + si)) {
+          removed += 1
         }
       }
     }
@@ -325,16 +300,14 @@ const applyFilter2 = async (bitmapBuffer: ArrayBuffer, history: Draw[]): Promise
       nextCombination(numbers, 50, 5)
     }
 
-    // Yield regularly so the worker never blocks and progress stays live.
-    if ((ni + 1) % CHUNK === 0 || Date.now() - lastProgressAt >= 150) {
-      const now = Date.now()
-      lastProgressAt = now
-      reportProgress('filter2', analyzedActive, activeAtStart, removed, startedAt)
+    // Yield regularly so the event loop stays responsive.
+    if ((ni + 1) % CHUNK === 0) {
+      reportProgress('filter2', ni + 1, TOTAL_NUMBER_COMBINATIONS, removed, startedAt)
       await waitTick()
     }
   }
 
-  reportProgress('filter2', activeAtStart, activeAtStart, removed, startedAt)
+  reportProgress('filter2', TOTAL_NUMBER_COMBINATIONS, TOTAL_NUMBER_COMBINATIONS, removed, startedAt)
 
   const finalBitmap = toArrayBuffer(bitmap)
   post({
