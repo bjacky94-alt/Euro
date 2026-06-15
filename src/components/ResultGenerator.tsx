@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
+import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import type { DecodedCombination } from '../utils/resultGenerator'
 
 interface ResultGeneratorProps {
@@ -39,11 +39,6 @@ export function ResultGenerator({
     }
     rowRefs.current[selectedIndex]?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
   }, [selectedIndex])
-
-  const keyboardHint = useMemo(
-    () => 'Utilise les flèches haut/bas pour naviguer, entrée pour garder la sélection.',
-    [],
-  )
 
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (!hasResults) {
@@ -91,8 +86,6 @@ export function ResultGenerator({
       </div>
 
       {warning ? <p className="warning-inline">{warning}</p> : null}
-
-      <p className="generator-hint">{keyboardHint}</p>
 
       <div
         className="result-table-wrap result-list"
