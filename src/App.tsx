@@ -51,14 +51,7 @@ interface PortableBackup {
   }
 }
 
-const toBase64 = (bytes: Uint8Array): string => {
-  let binary = ''
-  const chunkSize = 0x8000
-  for (let i = 0; i < bytes.length; i += chunkSize) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize))
-  }
-  return btoa(binary)
-}
+const GITHUB_BACKUP_URL = 'https://raw.githubusercontent.com/bjacky94-alt/Euro/main/backup.json'
 
 const fromBase64 = (base64: string): Uint8Array => {
   const binary = atob(base64)
@@ -67,6 +60,24 @@ const fromBase64 = (base64: string): Uint8Array => {
     bytes[i] = binary.charCodeAt(i)
   }
   return bytes
+}
+
+const toPersistedState = (parsed: PortableBackup): PersistedState => {
+  if (!parsed?.state?.bitmapBase64) {
+    throw new Error('Format invalide')
+  }
+
+  const bitmapBytes = fromBase64(parsed.state.bitmapBase64)
+  return {
+    version: 2,
+    bitmap: cloneBitmapBuffer(bitmapBytes),
+    history: (parsed.state.history ?? []) as Draw[],
+    stats: parsed.state.stats,
+    baseCreated: parsed.state.baseCreated,
+    lastSavedAt: parsed.state.lastSavedAt,
+    generatedResults: parsed.state.generatedResults ?? [],
+    requestedGeneratedCount: Math.max(1, parsed.state.requestedGeneratedCount ?? 10),
+  }
 }
 
 function App() {
@@ -99,7 +110,6 @@ function App() {
   const isFilter2RunningRef = useRef(isFilter2Running)
   const lastFilter2ProgressRef = useRef<FilterProgress | null>(null)
   const hardTimeoutRef = useRef<number | null>(null)
-  const importInputRef = useRef<HTMLInputElement | null>(null)
 
   useEffect(() => {
     generatedResultsRef.current = generatedResults
@@ -387,98 +397,39 @@ function App() {
     setNotice('Sauvegarde effectuée dans IndexedDB.')
   }
 
-  const handleExportBackup = async () => {
-    let state = await loadState()
+  const applyImportedState = async (importedState: PersistedState) => {
+    await saveState(importedState)
 
-    if (!state && bitmap) {
-      state = {
-        version: 2,
-        bitmap: cloneBitmapBuffer(bitmap),
-        history: historyRef.current,
-        stats,
-        baseCreated,
-        lastSavedAt: new Date().toISOString(),
-        generatedResults,
-        requestedGeneratedCount,
-      }
-    }
+    const bitmapFromImport = new Uint8Array(importedState.bitmap)
+    const repaired = replaceInactiveResults(bitmapFromImport, importedState.generatedResults ?? [])
 
-    if (!state) {
-      setNotice('Aucune sauvegarde à exporter.')
-      return
-    }
-
-    const payload: PortableBackup = {
-      version: 1,
-      exportedAt: new Date().toISOString(),
-      state: {
-        ...state,
-        bitmapBase64: toBase64(new Uint8Array(state.bitmap)),
-      },
-    }
-
-    const blob = new Blob([JSON.stringify(payload)], { type: 'application/json' })
-    const url = URL.createObjectURL(blob)
-    const link = document.createElement('a')
-    link.href = url
-    link.download = `euromillions-backup-${new Date().toISOString().slice(0, 10)}.json`
-    link.click()
-    URL.revokeObjectURL(url)
-
-    setNotice('Sauvegarde exportée. Ajoute ce fichier sur GitHub pour la retrouver partout.')
+    setBitmap(bitmapFromImport)
+    setStats(importedState.stats)
+    setBaseCreated(importedState.baseCreated)
+    setRawHistory(
+      importedState.history
+        .map((draw) => `${draw.numbers.join(' ')} ${draw.stars.join(' ')}`)
+        .join('\n'),
+    )
+    setRequestedGeneratedCount(importedState.requestedGeneratedCount ?? 10)
+    setGeneratedResults(repaired)
+    setStatus('Terminé')
+    setNotice('Sauvegarde chargée avec succès.')
   }
 
-  const handleImportBackup = () => {
-    importInputRef.current?.click()
-  }
-
-  const handleImportFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0]
-    if (!file) {
-      return
-    }
-
+  const handleLoadBackup = async () => {
     try {
-      const raw = await file.text()
+      const response = await fetch(GITHUB_BACKUP_URL)
+      if (!response.ok) {
+        throw new Error('Téléchargement impossible')
+      }
+
+      const raw = await response.text()
       const parsed = JSON.parse(raw) as PortableBackup
-
-      if (!parsed?.state?.bitmapBase64) {
-        throw new Error('Format invalide')
-      }
-
-      const bitmapBytes = fromBase64(parsed.state.bitmapBase64)
-      const importedState: PersistedState = {
-        version: 2,
-        bitmap: cloneBitmapBuffer(bitmapBytes),
-        history: (parsed.state.history ?? []) as Draw[],
-        stats: parsed.state.stats,
-        baseCreated: parsed.state.baseCreated,
-        lastSavedAt: parsed.state.lastSavedAt,
-        generatedResults: parsed.state.generatedResults ?? [],
-        requestedGeneratedCount: Math.max(1, parsed.state.requestedGeneratedCount ?? 10),
-      }
-
-      await saveState(importedState)
-
-      const bitmapFromImport = new Uint8Array(importedState.bitmap)
-      const repaired = replaceInactiveResults(bitmapFromImport, importedState.generatedResults ?? [])
-
-      setBitmap(bitmapFromImport)
-      setStats(importedState.stats)
-      setBaseCreated(importedState.baseCreated)
-      setRawHistory(
-        importedState.history
-          .map((draw) => `${draw.numbers.join(' ')} ${draw.stars.join(' ')}`)
-          .join('\n'),
-      )
-      setRequestedGeneratedCount(importedState.requestedGeneratedCount ?? 10)
-      setGeneratedResults(repaired)
-      setStatus('Terminé')
-      setNotice('Sauvegarde importée depuis fichier GitHub.')
+      const importedState = toPersistedState(parsed)
+      await applyImportedState(importedState)
     } catch {
-      setNotice('Impossible d\'importer cette sauvegarde.')
-    } finally {
-      event.target.value = ''
+      setNotice('Impossible de charger backup.json depuis GitHub.')
     }
   }
 
@@ -569,18 +520,9 @@ function App() {
           isProcessing={isProcessing || isInitializingBase}
           isInitializingBase={isInitializingBase}
           onSave={handleSave}
-          onExportBackup={handleExportBackup}
-          onImportBackup={handleImportBackup}
+          onLoadBackup={handleLoadBackup}
           onReset={handleReset}
           onStop={handleStop}
-        />
-
-        <input
-          ref={importInputRef}
-          type="file"
-          accept="application/json"
-          style={{ display: 'none' }}
-          onChange={handleImportFileChange}
         />
 
         {notice ? <p className={`notice ${status === 'Erreur' ? 'error' : ''}`}>{notice}</p> : null}
