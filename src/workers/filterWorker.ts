@@ -6,8 +6,7 @@ import {
   TOTAL_NUMBER_COMBINATIONS,
   TOTAL_STAR_COMBINATIONS,
 } from '../types'
-import { clearBit, createBitmap, countActiveBits, isBitSet } from '../utils/bitmap'
-import { createTriplets, rankCombination } from '../utils/combinations'
+import { clearBit, createBitmap, countActiveBits } from '../utils/bitmap'
 
 const ctx: DedicatedWorkerGlobalScope = self as DedicatedWorkerGlobalScope
 
@@ -82,18 +81,21 @@ const buildStats = (bitmap: Uint8Array) => {
   }
 }
 
-const createVisitedBitmap = (bitsCount: number): Uint8Array =>
-  new Uint8Array(Math.ceil(bitsCount / 8))
-
-const markVisited = (visited: Uint8Array, bitIndex: number): boolean => {
-  const byteIndex = bitIndex >> 3
-  const bitOffset = bitIndex & 7
-  const mask = 1 << bitOffset
-  if ((visited[byteIndex] & mask) !== 0) {
-    return false
+// Precompute for each draw: the set of 5 numbers and the star pair indexes
+// compatible with at least 1 draw star (max 21 star indexes out of 66).
+const buildDrawStarIndexes = (stars: Draw['stars']): number[] => {
+  const [a, b] = stars
+  const indexes: number[] = []
+  let si = 0
+  for (let s1 = 1; s1 <= 11; s1 += 1) {
+    for (let s2 = s1 + 1; s2 <= 12; s2 += 1) {
+      if (s1 === a || s2 === a || s1 === b || s2 === b) {
+        indexes.push(si)
+      }
+      si += 1
+    }
   }
-  visited[byteIndex] |= mask
-  return true
+  return indexes
 }
 
 const waitTick = async (): Promise<void> =>
@@ -224,13 +226,9 @@ const applyPermanentFilters = async (): Promise<void> => {
 const applyFilter2 = async (bitmapBuffer: ArrayBuffer, history: Draw[]): Promise<void> => {
   stopRequested = false
   const bitmap = new Uint8Array(bitmapBuffer)
-
   const startedAt = Date.now()
-  const activeAtStart = countActiveBits(bitmap)
-  const totalForProgress = Math.max(1, activeAtStart)
   let removed = 0
-  let analyzed = 0
-  const visited = createVisitedBitmap(TOTAL_COMBINATIONS)
+  let lastProgressAt = startedAt
 
   if (history.length === 0) {
     post({
@@ -245,76 +243,71 @@ const applyFilter2 = async (bitmapBuffer: ArrayBuffer, history: Draw[]): Promise
     return
   }
 
-  const starIndexesByDraw = history.map((draw) => {
-    const [a, b] = draw.stars
-    const indexes: number[] = []
-    for (let s1 = 1; s1 <= 11; s1 += 1) {
-      for (let s2 = s1 + 1; s2 <= 12; s2 += 1) {
-        if (s1 === a || s2 === a || s1 === b || s2 === b) {
-          indexes.push(rankCombination([s1, s2], 12, 2))
-        }
-      }
-    }
-    return indexes
-  })
+  // Precompute per draw: number set + compatible star pair indexes.
+  const drawData = history.map((draw) => ({
+    numbersSet: new Set<number>(draw.numbers),
+    starIndexes: buildDrawStarIndexes(draw.stars),
+  }))
 
-  const yieldChunk = 20000
+  // Reusable buffer to collect star indexes to suppress for a given number combo.
+  const toSuppressBuffer = new Uint8Array(TOTAL_STAR_COMBINATIONS)
 
-  for (let drawIndex = 0; drawIndex < history.length; drawIndex += 1) {
+  // Iterate directly over all C(50,5) number combinations using the
+  // nextCombination approach — avoids any rankCombination overhead.
+  const CHUNK = 2000
+  const numbers = [1, 2, 3, 4, 5]
+
+  for (let ni = 0; ni < TOTAL_NUMBER_COMBINATIONS; ni += 1) {
     if (stopRequested) {
       break
     }
 
-    const draw = history[drawIndex]
-    const triplets = createTriplets(draw.numbers)
-    const starIndexes = starIndexesByDraw[drawIndex]
-
-    for (const triplet of triplets) {
-      const excluded = new Set(triplet)
-      const others: number[] = []
-      for (let value = 1; value <= 50; value += 1) {
-        if (!excluded.has(value)) {
-          others.push(value)
+    // Check each draw: does this number combo have >= 3 matches?
+    let suppressCount = 0
+    for (const { numbersSet, starIndexes } of drawData) {
+      let matches = 0
+      for (let i = 0; i < 5; i += 1) {
+        if (numbersSet.has(numbers[i])) {
+          matches += 1
         }
       }
-
-      for (let i = 0; i < others.length - 1; i += 1) {
-        for (let j = i + 1; j < others.length; j += 1) {
-          const numbers = [...triplet, others[i], others[j]].sort((x, y) => x - y)
-          const numberIndex = rankCombination(numbers, 50, 5)
-          const base = numberIndex * TOTAL_STAR_COMBINATIONS
-
-          for (const starIndex of starIndexes) {
-            const bitIndex = base + starIndex
-            if (markVisited(visited, bitIndex) && isBitSet(bitmap, bitIndex)) {
-              analyzed += 1
-            }
-
-            if (clearBit(bitmap, bitIndex)) {
-              removed += 1
-            }
-          }
-
-          if (analyzed % yieldChunk === 0) {
-            reportProgress('filter2', analyzed, totalForProgress, removed, startedAt)
-            await waitTick()
-          }
-
-          if (stopRequested) {
-            break
+      if (matches >= 3) {
+        for (const si of starIndexes) {
+          if (toSuppressBuffer[si] === 0) {
+            toSuppressBuffer[si] = 1
+            suppressCount += 1
           }
         }
-        if (stopRequested) {
-          break
+      }
+    }
+
+    if (suppressCount > 0) {
+      const base = ni * TOTAL_STAR_COMBINATIONS
+      for (let si = 0; si < TOTAL_STAR_COMBINATIONS; si += 1) {
+        if (toSuppressBuffer[si] === 1) {
+          toSuppressBuffer[si] = 0 // reset for next iteration
+          if (clearBit(bitmap, base + si)) {
+            removed += 1
+          }
         }
       }
-      if (stopRequested) {
-        break
-      }
+    }
+
+    // Advance to next combination.
+    if (ni < TOTAL_NUMBER_COMBINATIONS - 1) {
+      nextCombination(numbers, 50, 5)
+    }
+
+    // Yield regularly so the worker never blocks and progress stays live.
+    if ((ni + 1) % CHUNK === 0 || Date.now() - lastProgressAt >= 150) {
+      const now = Date.now()
+      lastProgressAt = now
+      reportProgress('filter2', ni + 1, TOTAL_NUMBER_COMBINATIONS, removed, startedAt)
+      await waitTick()
     }
   }
 
-  reportProgress('filter2', analyzed, totalForProgress, removed, startedAt)
+  reportProgress('filter2', TOTAL_NUMBER_COMBINATIONS, TOTAL_NUMBER_COMBINATIONS, removed, startedAt)
 
   post({
     type: 'done',
