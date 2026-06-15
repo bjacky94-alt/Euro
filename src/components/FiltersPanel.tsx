@@ -2,8 +2,8 @@ interface FiltersPanelProps {
   canSave: boolean
   isProcessing: boolean
   isInitializingBase: boolean
+  onLoad: () => void
   onSave: () => void
-  onLoadBackup: () => void
   onReset: () => void
   onStop: () => void
 }
@@ -12,8 +12,8 @@ export function FiltersPanel({
   canSave,
   isProcessing,
   isInitializingBase,
+  onLoad,
   onSave,
-  onLoadBackup,
   onReset,
   onStop,
 }: FiltersPanelProps) {
@@ -24,12 +24,12 @@ export function FiltersPanel({
       </header>
 
       <div className="button-grid">
-        <button type="button" onClick={onSave} disabled={!canSave || isProcessing}>
-          Sauvegarder
+        <button type="button" onClick={onLoad} disabled={isProcessing}>
+          Charger
         </button>
 
-        <button type="button" onClick={onLoadBackup} disabled={isProcessing}>
-          Charger sauvegarde
+        <button type="button" onClick={onSave} disabled={!canSave || isProcessing}>
+          Sauvegarder
         </button>
 
         <button type="button" className="danger" onClick={onReset} disabled={isProcessing}>

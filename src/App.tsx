@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react'
 import { Dashboard } from './components/Dashboard'
 import { FiltersPanel } from './components/FiltersPanel'
 import { Filter2Panel } from './components/Filter2Panel'
@@ -51,7 +51,29 @@ interface PortableBackup {
   }
 }
 
-const GITHUB_BACKUP_URL = 'https://raw.githubusercontent.com/bjacky94-alt/Euro/main/backup.json'
+const toBase64 = (bytes: Uint8Array): string => {
+  let binary = ''
+  const chunkSize = 0x8000
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize))
+  }
+  return btoa(binary)
+}
+
+type SaveFilePickerWindow = Window & {
+  showSaveFilePicker?: (options?: {
+    suggestedName?: string
+    types?: Array<{
+      description?: string
+      accept: Record<string, string[]>
+    }>
+  }) => Promise<{
+    createWritable: () => Promise<{
+      write: (data: Blob | string) => Promise<void>
+      close: () => Promise<void>
+    }>
+  }>
+}
 
 const fromBase64 = (base64: string): Uint8Array => {
   const binary = atob(base64)
@@ -110,6 +132,7 @@ function App() {
   const isFilter2RunningRef = useRef(isFilter2Running)
   const lastFilter2ProgressRef = useRef<FilterProgress | null>(null)
   const hardTimeoutRef = useRef<number | null>(null)
+  const importInputRef = useRef<HTMLInputElement | null>(null)
 
   useEffect(() => {
     generatedResultsRef.current = generatedResults
@@ -384,7 +407,7 @@ function App() {
     }
 
     const now = new Date().toISOString()
-    await saveState({
+    const state: PersistedState = {
       version: 2,
       bitmap: cloneBitmapBuffer(bitmap),
       history: historyRef.current,
@@ -393,8 +416,53 @@ function App() {
       lastSavedAt: now,
       generatedResults,
       requestedGeneratedCount,
-    })
-    setNotice('Sauvegarde effectuée dans IndexedDB.')
+    }
+
+    await saveState(state)
+
+    const payload: PortableBackup = {
+      version: 1,
+      exportedAt: now,
+      state: {
+        ...state,
+        history: state.history as Draw[],
+        bitmapBase64: toBase64(new Uint8Array(state.bitmap)),
+      },
+    }
+
+    const fileName = `euromillions-backup-${now.slice(0, 10)}.json`
+    const json = JSON.stringify(payload, null, 2)
+    const saveWindow = window as SaveFilePickerWindow
+
+    try {
+      if (saveWindow.showSaveFilePicker) {
+        const handle = await saveWindow.showSaveFilePicker({
+          suggestedName: fileName,
+          types: [
+            {
+              description: 'Sauvegarde EuroMillions',
+              accept: { 'application/json': ['.json'] },
+            },
+          ],
+        })
+        const writable = await handle.createWritable()
+        await writable.write(json)
+        await writable.close()
+        setNotice('Sauvegarde enregistrée dans un fichier local.')
+        return
+      }
+
+      const blob = new Blob([json], { type: 'application/json' })
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = fileName
+      link.click()
+      URL.revokeObjectURL(url)
+      setNotice('Sauvegarde téléchargée en fichier local.')
+    } catch {
+      setNotice('Sauvegarde annulée ou impossible.')
+    }
   }
 
   const applyImportedState = async (importedState: PersistedState) => {
@@ -414,22 +482,28 @@ function App() {
     setRequestedGeneratedCount(importedState.requestedGeneratedCount ?? 10)
     setGeneratedResults(repaired)
     setStatus('Terminé')
-    setNotice('Sauvegarde chargée avec succès.')
+    setNotice('Sauvegarde chargée depuis le fichier local.')
   }
 
-  const handleLoadBackup = async () => {
-    try {
-      const response = await fetch(GITHUB_BACKUP_URL)
-      if (!response.ok) {
-        throw new Error('Téléchargement impossible')
-      }
+  const handleLoad = () => {
+    importInputRef.current?.click()
+  }
 
-      const raw = await response.text()
+  const handleImportFileChange = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    if (!file) {
+      return
+    }
+
+    try {
+      const raw = await file.text()
       const parsed = JSON.parse(raw) as PortableBackup
       const importedState = toPersistedState(parsed)
       await applyImportedState(importedState)
     } catch {
-      setNotice('Impossible de charger backup.json depuis GitHub.')
+      setNotice('Impossible de charger ce fichier de sauvegarde.')
+    } finally {
+      event.target.value = ''
     }
   }
 
@@ -519,10 +593,18 @@ function App() {
           canSave={Boolean(bitmap) && baseCreated}
           isProcessing={isProcessing || isInitializingBase}
           isInitializingBase={isInitializingBase}
+          onLoad={handleLoad}
           onSave={handleSave}
-          onLoadBackup={handleLoadBackup}
           onReset={handleReset}
           onStop={handleStop}
+        />
+
+        <input
+          ref={importInputRef}
+          type="file"
+          accept="application/json,.json"
+          style={{ display: 'none' }}
+          onChange={handleImportFileChange}
         />
 
         {notice ? <p className={`notice ${status === 'Erreur' ? 'error' : ''}`}>{notice}</p> : null}
