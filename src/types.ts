@@ -26,12 +26,14 @@ export interface StatisticsSnapshot {
 }
 
 export interface PersistedState {
-  version: 1
+  version: 1 | 2
   bitmap: ArrayBuffer
   history: Draw[]
   stats: StatisticsSnapshot
   baseCreated: boolean
   lastSavedAt: string
+  generatedResults?: number[]
+  requestedGeneratedCount?: number
 }
 
 export type WorkerRequest =
@@ -43,12 +45,10 @@ export type WorkerResponse =
   | { type: 'progress'; payload: FilterProgress }
   | {
       type: 'done'
-      payload: {
-        phase: Exclude<FilterPhase, 'idle'>
-        bitmap: ArrayBuffer
-        removed: number
-        active: number
-        cancelled: boolean
-      }
+      phase: Exclude<FilterPhase, 'idle'>
+      bitmap: ArrayBuffer
+      stats: StatisticsSnapshot
+      removed: number
+      cancelled: boolean
     }
-  | { type: 'error'; payload: { message: string } }
+  | { type: 'error'; message: string }

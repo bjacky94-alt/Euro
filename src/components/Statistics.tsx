@@ -1,9 +1,10 @@
 interface StatisticsProps {
   historyCount: number
   hasBitmap: boolean
+  status: 'En attente' | 'En cours' | 'Terminé' | 'Erreur'
 }
 
-export function Statistics({ historyCount, hasBitmap }: StatisticsProps) {
+export function Statistics({ historyCount, hasBitmap, status }: StatisticsProps) {
   return (
     <section className="panel">
       <header className="panel-header">
@@ -25,6 +26,9 @@ export function Statistics({ historyCount, hasBitmap }: StatisticsProps) {
         </p>
         <p>
           Bitmap mémoire: <b>{hasBitmap ? 'Présent' : 'Absent'}</b>
+        </p>
+        <p>
+          Statut: <b>{status}</b>
         </p>
       </div>
     </section>

@@ -3,10 +3,11 @@
 import type { Draw, FilterProgress, WorkerRequest, WorkerResponse } from '../types'
 import {
   TOTAL_COMBINATIONS,
+  TOTAL_NUMBER_COMBINATIONS,
   TOTAL_STAR_COMBINATIONS,
 } from '../types'
 import { clearBit, createBitmap, countActiveBits, isBitSet } from '../utils/bitmap'
-import { countMatchingNumbers, forEachCombination } from '../utils/combinations'
+import { createTriplets, rankCombination } from '../utils/combinations'
 
 const ctx: DedicatedWorkerGlobalScope = self as DedicatedWorkerGlobalScope
 
@@ -70,135 +71,260 @@ const reportProgress = (
   })
 }
 
-const applyPermanentFilters = (): void => {
-  stopRequested = false
-  const bitmap = createBitmap()
-  const startedAt = Date.now()
-  let removed = 0
-  let analyzed = 0
+const buildStats = (bitmap: Uint8Array) => {
+  const active = countActiveBits(bitmap)
+  const removed = TOTAL_COMBINATIONS - active
+  return {
+    total: TOTAL_COMBINATIONS,
+    active,
+    removed,
+    percentageRemaining: (active / TOTAL_COMBINATIONS) * 100,
+  }
+}
 
-  forEachCombination(50, 5, (numbers, numberIndex) => {
+const createVisitedBitmap = (bitsCount: number): Uint8Array =>
+  new Uint8Array(Math.ceil(bitsCount / 8))
+
+const markVisited = (visited: Uint8Array, bitIndex: number): boolean => {
+  const byteIndex = bitIndex >> 3
+  const bitOffset = bitIndex & 7
+  const mask = 1 << bitOffset
+  if ((visited[byteIndex] & mask) !== 0) {
+    return false
+  }
+  visited[byteIndex] |= mask
+  return true
+}
+
+const waitTick = async (): Promise<void> =>
+  new Promise((resolve) => {
+    setTimeout(resolve, 0)
+  })
+
+const nextCombination = (comb: number[], n: number, k: number): boolean => {
+  let i = k - 1
+  while (i >= 0 && comb[i] === n - k + i + 1) {
+    i -= 1
+  }
+  if (i < 0) {
+    return false
+  }
+
+  comb[i] += 1
+  for (let j = i + 1; j < k; j += 1) {
+    comb[j] = comb[j - 1] + 1
+  }
+  return true
+}
+
+const applyPermanentFilters = async (): Promise<void> => {
+  stopRequested = false
+  console.log('Worker started createBase')
+  const bitmap = createBitmap()
+  console.log('Bitmap initialized')
+
+  const startedAt = Date.now()
+  let removedFilter1 = 0
+  let removedFilter3 = 0
+  let analyzed = 0
+  const chunkSize = 2500
+
+  reportProgress('createBase', 0, TOTAL_COMBINATIONS, 0, startedAt)
+
+  const numbers1 = [1, 2, 3, 4, 5]
+  for (let numberIndex = 0; numberIndex < TOTAL_NUMBER_COMBINATIONS; numberIndex += 1) {
     if (stopRequested) {
-      return
+      break
     }
 
     analyzed = (numberIndex + 1) * TOTAL_STAR_COMBINATIONS
 
-    if (hasConsecutiveRun(numbers) || hasSameUnitDigit(numbers)) {
+    if (hasConsecutiveRun(numbers1)) {
       const base = numberIndex * TOTAL_STAR_COMBINATIONS
       for (let s = 0; s < TOTAL_STAR_COMBINATIONS; s += 1) {
         if (clearBit(bitmap, base + s)) {
-          removed += 1
+          removedFilter1 += 1
         }
       }
     }
 
-    if ((numberIndex + 1) % 4000 === 0) {
-      reportProgress('createBase', analyzed, TOTAL_COMBINATIONS, removed, startedAt)
+    if ((numberIndex + 1) % 1000 === 0) {
+      reportProgress('createBase', analyzed, TOTAL_COMBINATIONS, removedFilter1, startedAt)
     }
-  })
 
-  const active = countActiveBits(bitmap)
+    if ((numberIndex + 1) % chunkSize === 0) {
+      await waitTick()
+    }
+
+    if (numberIndex < TOTAL_NUMBER_COMBINATIONS - 1) {
+      nextCombination(numbers1, 50, 5)
+    }
+  }
+
+  console.log('Filter 1 done')
+
+  const numbers3 = [1, 2, 3, 4, 5]
+  for (let numberIndex = 0; numberIndex < TOTAL_NUMBER_COMBINATIONS; numberIndex += 1) {
+    if (stopRequested) {
+      break
+    }
+
+    analyzed = (numberIndex + 1) * TOTAL_STAR_COMBINATIONS
+
+    if (hasSameUnitDigit(numbers3)) {
+      const base = numberIndex * TOTAL_STAR_COMBINATIONS
+      for (let s = 0; s < TOTAL_STAR_COMBINATIONS; s += 1) {
+        if (clearBit(bitmap, base + s)) {
+          removedFilter3 += 1
+        }
+      }
+    }
+
+    if ((numberIndex + 1) % 1000 === 0) {
+      reportProgress(
+        'createBase',
+        analyzed,
+        TOTAL_COMBINATIONS,
+        removedFilter1 + removedFilter3,
+        startedAt,
+      )
+    }
+
+    if ((numberIndex + 1) % chunkSize === 0) {
+      await waitTick()
+    }
+
+    if (numberIndex < TOTAL_NUMBER_COMBINATIONS - 1) {
+      nextCombination(numbers3, 50, 5)
+    }
+  }
+
+  console.log('Filter 3 done')
+
+  reportProgress(
+    'createBase',
+    TOTAL_COMBINATIONS,
+    TOTAL_COMBINATIONS,
+    removedFilter1 + removedFilter3,
+    startedAt,
+  )
+
+  const stats = buildStats(bitmap)
   post({
     type: 'done',
-    payload: {
-      phase: 'createBase',
-      bitmap: toArrayBuffer(bitmap),
-      removed,
-      active,
-      cancelled: stopRequested,
-    },
+    phase: 'createBase',
+    bitmap: toArrayBuffer(bitmap),
+    stats,
+    removed: removedFilter1 + removedFilter3,
+    cancelled: stopRequested,
   })
+  console.log('Worker done sent')
 }
 
-const applyFilter2 = (bitmapBuffer: ArrayBuffer, history: Draw[]): void => {
+const applyFilter2 = async (bitmapBuffer: ArrayBuffer, history: Draw[]): Promise<void> => {
   stopRequested = false
   const bitmap = new Uint8Array(bitmapBuffer)
 
   const startedAt = Date.now()
+  const activeAtStart = countActiveBits(bitmap)
+  const totalForProgress = Math.max(1, activeAtStart)
   let removed = 0
   let analyzed = 0
+  const visited = createVisitedBitmap(TOTAL_COMBINATIONS)
 
   if (history.length === 0) {
     post({
       type: 'done',
-      payload: {
-        phase: 'filter2',
-        bitmap: toArrayBuffer(bitmap),
-        removed,
-        active: countActiveBits(bitmap),
-        cancelled: false,
-      },
+      phase: 'filter2',
+      bitmap: toArrayBuffer(bitmap),
+      stats: buildStats(bitmap),
+      removed,
+      cancelled: false,
     })
+    console.log('Worker done sent')
     return
   }
 
-  const prepared = history.map((draw) => ({
-    numbersSet: new Set<number>(draw.numbers),
-    starsSet: new Set<number>(draw.stars),
-  }))
-
-  const starPairs: [number, number][] = []
-  forEachCombination(12, 2, (pair) => {
-    starPairs.push([pair[0], pair[1]])
-  })
-
-  forEachCombination(50, 5, (numbers, numberIndex) => {
-    if (stopRequested) {
-      return
-    }
-
-    const matchingDrawIndexes: number[] = []
-    for (let i = 0; i < prepared.length; i += 1) {
-      const matchedNumbers = countMatchingNumbers(numbers, prepared[i].numbersSet)
-      if (matchedNumbers >= 3) {
-        matchingDrawIndexes.push(i)
+  const starIndexesByDraw = history.map((draw) => {
+    const [a, b] = draw.stars
+    const indexes: number[] = []
+    for (let s1 = 1; s1 <= 11; s1 += 1) {
+      for (let s2 = s1 + 1; s2 <= 12; s2 += 1) {
+        if (s1 === a || s2 === a || s1 === b || s2 === b) {
+          indexes.push(rankCombination([s1, s2], 12, 2))
+        }
       }
     }
+    return indexes
+  })
 
-    const base = numberIndex * TOTAL_STAR_COMBINATIONS
-    if (matchingDrawIndexes.length > 0) {
-      for (let starIndex = 0; starIndex < starPairs.length; starIndex += 1) {
-        const bitIndex = base + starIndex
-        analyzed += 1
+  const yieldChunk = 20000
 
-        if (!isBitSet(bitmap, bitIndex)) {
-          continue
+  for (let drawIndex = 0; drawIndex < history.length; drawIndex += 1) {
+    if (stopRequested) {
+      break
+    }
+
+    const draw = history[drawIndex]
+    const triplets = createTriplets(draw.numbers)
+    const starIndexes = starIndexesByDraw[drawIndex]
+
+    for (const triplet of triplets) {
+      const excluded = new Set(triplet)
+      const others: number[] = []
+      for (let value = 1; value <= 50; value += 1) {
+        if (!excluded.has(value)) {
+          others.push(value)
         }
+      }
 
-        const [s1, s2] = starPairs[starIndex]
-        let shouldRemove = false
-        for (const drawIndex of matchingDrawIndexes) {
-          const starsSet = prepared[drawIndex].starsSet
-          if (starsSet.has(s1) || starsSet.has(s2)) {
-            shouldRemove = true
+      for (let i = 0; i < others.length - 1; i += 1) {
+        for (let j = i + 1; j < others.length; j += 1) {
+          const numbers = [...triplet, others[i], others[j]].sort((x, y) => x - y)
+          const numberIndex = rankCombination(numbers, 50, 5)
+          const base = numberIndex * TOTAL_STAR_COMBINATIONS
+
+          for (const starIndex of starIndexes) {
+            const bitIndex = base + starIndex
+            if (markVisited(visited, bitIndex) && isBitSet(bitmap, bitIndex)) {
+              analyzed += 1
+            }
+
+            if (clearBit(bitmap, bitIndex)) {
+              removed += 1
+            }
+          }
+
+          if (analyzed % yieldChunk === 0) {
+            reportProgress('filter2', analyzed, totalForProgress, removed, startedAt)
+            await waitTick()
+          }
+
+          if (stopRequested) {
             break
           }
         }
-
-        if (shouldRemove && clearBit(bitmap, bitIndex)) {
-          removed += 1
+        if (stopRequested) {
+          break
         }
       }
-    } else {
-      analyzed += TOTAL_STAR_COMBINATIONS
+      if (stopRequested) {
+        break
+      }
     }
+  }
 
-    if ((numberIndex + 1) % 3500 === 0) {
-      reportProgress('filter2', analyzed, TOTAL_COMBINATIONS, removed, startedAt)
-    }
-  })
+  reportProgress('filter2', analyzed, totalForProgress, removed, startedAt)
 
   post({
     type: 'done',
-    payload: {
-      phase: 'filter2',
-      bitmap: toArrayBuffer(bitmap),
-      removed,
-      active: countActiveBits(bitmap),
-      cancelled: stopRequested,
-    },
+    phase: 'filter2',
+    bitmap: toArrayBuffer(bitmap),
+    stats: buildStats(bitmap),
+    removed,
+    cancelled: stopRequested,
   })
+  console.log('Worker done sent')
 }
 
 ctx.onmessage = (event: MessageEvent<WorkerRequest>) => {
@@ -211,15 +337,21 @@ ctx.onmessage = (event: MessageEvent<WorkerRequest>) => {
     }
 
     if (data.type === 'createBase') {
-      applyPermanentFilters()
+      void applyPermanentFilters().catch((error) => {
+        const message = error instanceof Error ? error.message : 'Erreur worker inconnue'
+        post({ type: 'error', message })
+      })
       return
     }
 
     if (data.type === 'applyFilter2') {
-      applyFilter2(data.bitmap, data.history)
+      void applyFilter2(data.bitmap, data.history).catch((error) => {
+        const message = error instanceof Error ? error.message : 'Erreur worker inconnue'
+        post({ type: 'error', message })
+      })
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Erreur worker inconnue'
-    post({ type: 'error', payload: { message } })
+    post({ type: 'error', message })
   }
 }

@@ -13,7 +13,7 @@ export function Dashboard({ stats, baseCreated, lastSavedAt }: DashboardProps) {
   return (
     <section className="panel">
       <header className="panel-header">
-        <h2>Tableau de bord</h2>
+        <h2>Résumé</h2>
       </header>
 
       <div className="stats-grid">
@@ -22,7 +22,7 @@ export function Dashboard({ stats, baseCreated, lastSavedAt }: DashboardProps) {
           <strong>{formatInt(stats.total)}</strong>
         </article>
         <article className="stat-card">
-          <span>Actives</span>
+          <span>Combinaisons restantes</span>
           <strong>{formatInt(stats.active)}</strong>
         </article>
         <article className="stat-card danger">
@@ -37,7 +37,7 @@ export function Dashboard({ stats, baseCreated, lastSavedAt }: DashboardProps) {
 
       <div className="meta-list">
         <p>
-          Etat base: <b>{baseCreated ? 'Créée' : 'Absente'}</b>
+          Etat base: <b>{baseCreated ? 'Présente' : 'Absente'}</b>
         </p>
         <p>
           Dernière sauvegarde:{' '}
