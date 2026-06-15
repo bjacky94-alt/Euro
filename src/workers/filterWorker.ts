@@ -247,8 +247,12 @@ const applyFilter2 = async (bitmapBuffer: ArrayBuffer, history: Draw[]): Promise
     return
   }
 
+  // Total de référence = combinaisons actives avant ce filtre.
+  const activeAtStart = countActiveBits(bitmap)
+  let analyzedActive = 0
+
   // Send an immediate progress so React shows the filter has started.
-  reportProgress('filter2', 0, TOTAL_NUMBER_COMBINATIONS, 0, startedAt)
+  reportProgress('filter2', 0, activeAtStart, 0, startedAt)
 
   // Precompute per draw: number set + compatible star pair indexes.
   const drawData = history.map((draw) => ({
@@ -293,9 +297,25 @@ const applyFilter2 = async (bitmapBuffer: ArrayBuffer, history: Draw[]): Promise
       for (let si = 0; si < TOTAL_STAR_COMBINATIONS; si += 1) {
         if (toSuppressBuffer[si] === 1) {
           toSuppressBuffer[si] = 0 // reset for next iteration
+          // Count each active bit we touch as "analysé".
+          const byteIdx = (base + si) >> 3
+          const bitOff = (base + si) & 7
+          if ((bitmap[byteIdx] & (1 << bitOff)) !== 0) {
+            analyzedActive += 1
+          }
           if (clearBit(bitmap, base + si)) {
             removed += 1
           }
+        }
+      }
+    } else {
+      // No match for this number combo: all its active star combos are analyzed without being removed.
+      const base = ni * TOTAL_STAR_COMBINATIONS
+      for (let si = 0; si < TOTAL_STAR_COMBINATIONS; si += 1) {
+        const byteIdx = (base + si) >> 3
+        const bitOff = (base + si) & 7
+        if ((bitmap[byteIdx] & (1 << bitOff)) !== 0) {
+          analyzedActive += 1
         }
       }
     }
@@ -309,12 +329,12 @@ const applyFilter2 = async (bitmapBuffer: ArrayBuffer, history: Draw[]): Promise
     if ((ni + 1) % CHUNK === 0 || Date.now() - lastProgressAt >= 150) {
       const now = Date.now()
       lastProgressAt = now
-      reportProgress('filter2', ni + 1, TOTAL_NUMBER_COMBINATIONS, removed, startedAt)
+      reportProgress('filter2', analyzedActive, activeAtStart, removed, startedAt)
       await waitTick()
     }
   }
 
-  reportProgress('filter2', TOTAL_NUMBER_COMBINATIONS, TOTAL_NUMBER_COMBINATIONS, removed, startedAt)
+  reportProgress('filter2', activeAtStart, activeAtStart, removed, startedAt)
 
   const finalBitmap = toArrayBuffer(bitmap)
   post({
